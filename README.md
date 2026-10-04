@@ -9,6 +9,7 @@ Overview:
 This analysis pipeline performs taxonomic annotation, filtering, and alpha/beta diversity analysis of metagenomic viral sequencing data. Samples were collected from water column (free-living particles) and sediment (settled particles) matrices across three pollution gradient sites along the Virilla River (Costa Rica) during both dry and rainy seasons of the year 2022.
 
 Repository Structure:
+
 ├── README.md               # Overview and execution instructions
 
 ├── LICENSE                 # Open-source license (MIT / CC-BY 4.0)
