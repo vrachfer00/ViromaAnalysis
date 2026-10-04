@@ -1,0 +1,1316 @@
+Title: Metagenomic diversity analysis of metagenome-derived viral sequences from a Neotropical river
+
+Description: This script performs taxonomic annotation, filtering, and alpha/beta diversity 
+analysis of metagenomic sequencing data obtained from water column and 
+sediment samples collected along a pollution gradient in the Virilla River, 
+Costa Rica. Sampling was performed during the dry and rainy seasons.
+
+Main Steps:
+ 1. Installation and loading of required R packages.
+ 2. Taxonomic assignment using local SQLite database and `taxonomizr`.
+ 3. Construction of `phyloseq` objects from OTU table, taxonomic assignments, 
+    and metadata.
+ 4. Rarefaction of samples to normalize sequencing depth.
+ 5. Prevalence- and abundance-based filtering of taxa and samples.
+ 6. Subsetting of samples by habitat (water vs. sediment) and season (dry vs. rainy).
+ 7. Alpha diversity analysis using Observed richness, Shannon, and Inverse Simpson indices.
+ 8. Visualization of alpha diversity across sites and sample types.
+ 9. Statistical testing using Kruskal-Wallis and Dunn’s post-hoc tests.
+ 10.Ordination analysis on CLR-transformed microbial community data to visualize patterns in sample composition using Principal Component Analysis (PCA). 
+ 11. COGs categories visual analysis.
+ 
+```{r install-packages, eval=FALSE}
+BiocManager::install("phyloseq",force = TRUE)
+install.packages("remotes", repos = "https://cloud.r-project.org")
+remotes::install_github("vmikk/metagMisc", force = TRUE)
+install.packages(
+  "microViz",
+  repos = c(davidbarnett = "https://david-barnett.r-universe.dev", getOption("repos"))
+)
+BiocManager::install("metagenomeSeq")
+install.packages("devtools", repos = "https://cloud.r-project.org")
+devtools::install_github("braddmg/b2p/package")
+```
+ 
+ 
+```{r}
+#Load required libraries
+library("phyloseq")
+library("phyloseq")
+library("ggplot2")
+library("vegan")
+library("remotes")
+library("metagMisc")
+library("microbiome")
+library("DESeq2")
+library("taxonomizr")
+library("tidyverse")
+library(vegan)
+library(picante)
+library(ALDEx2)
+library(metagenomeSeq)
+library(HMP)
+library(dendextend)
+library(rms)
+library(breakaway)
+library(gridExtra)
+library(ggplot2)
+library(microViz)
+library(patchwork)
+library(tidyverse)
+library(dplyr)
+library(gridExtra)
+library(cowplot)
+library(forcats)
+library(dplyr)
+library(ggplot2)
+library(forcats)
+library(cowplot)
+
+# Load the 'b2p' package, which provides tools for taxonomic assignment
+library(b2p)
+# Set up the local SQL taxonomic database by specifying its file path
+setupdb(path = "C:/Users/DELL/Desktop/ManuscritoViroma")  # Replace with your actual path to 'accessionTaxa.sql'
+
+
+#Download SQLite database for taxonomy annotation
+#prepareDatabase('accessionTaxa.sql')
+
+# Load taxonomic IDs from CSV
+taxid <- read.csv("taxaid.csv")           
+taxaid <- list(taxid$taxid)               # Extract 'taxid' column and convert to list
+taxaid <- as.numeric(unlist(taxaid))      # Unlist and convert to numeric vector
+
+# Get taxonomy information for each taxid
+taxonomy <- getTaxonomy(
+  taxaid,
+  'accessionTaxa.sql',                    # SQLite database file for taxonomy lookup
+  desiredTaxa = c("superkingdom", "phylum", "class", 
+                  "order", "family", "genus", "species")  # Specify taxonomic levels
+)
+
+# Clean up row names (remove any whitespace)
+row.names(taxonomy) <- gsub("[[:space:]]", "", row.names(taxonomy))
+
+#Import OTU table and metadata
+Data=read.table("viromes.csv", sep=",", row.names = 1, header=TRUE)
+Data[is.na(Data)] <- 0
+
+# Create OTU and taxonomy objects
+OTU <- otu_table(Data, taxa_are_rows = TRUE)    
+TAX <- tax_table(taxonomy)                    
+
+# Create initial phyloseq object with OTU and taxonomy data
+physeq <- phyloseq(OTU, TAX)                    
+sample_names(physeq)                            
+#taxa_names(physeq)                              
+
+# Load sample metadata and format it to match the sample names in physeq
+meta_data <- read.csv("mdata2.csv", sep = ",")  
+sampledata <- sample_data(data.frame(
+  meta_data,
+  row.names = sample_names(physeq),
+  stringsAsFactors = FALSE                      
+))
+#sampledata                                       
+
+# Merge OTU, taxonomy, and metadata into a unified phyloseq object
+physeq1 <- merge_phyloseq(physeq, sampledata)  
+#sample_data(physeq1)                             
+
+# Perform rarefaction to normalize sequencing depth across samples
+p.rar2 <- rarefy_even_depth(
+  physeq1,
+  rngseed = 1,                                   # Set seed for reproducibility
+  sample.size = min(sample_sums(physeq1)),       # Use minimum sequencing depth
+  replace = FALSE                                 # Sample without replacement
+)
+
+# View metadata column names and rarefied phyloseq object summary
+colnames(sample_data(p.rar2))  # Check available metadata variables
+#p.rar2                         # View summary of the rarefied phyloseq object
+
+# Filter taxa by prevalence across samples
+# - prev.trh = 0.05: keep taxa present in at least 5% of the samples
+# - threshold_condition = "OR": keeps taxa that meet *either* prevalence or abundance thresholds
+# - abund.trh = NULL: skip abundance threshold for this step
+# - abund.type = "total": considers total abundance per taxon
+p.rar4 <- phyloseq_filter_prevalence(
+  p.rar2,
+  prev.trh = 0.05,
+  abund.trh = NULL,
+  threshold_condition = "OR",
+  abund.type = "total"
+)
+#p.rar4  
+
+# Further filter samples to retain only those with minimum total abundance of 10 reads
+p.rar4.2 <- phyloseq_filter_sample_wise_abund_trim(
+  p.rar4,
+  minabund = 10
+)
+```
+
+
+##### METADATA ######
+-Sampling corresponds to the time of the year: 2-Dry season, 3-Rainy season.
+-Type corresponds to the two types of samples: Water (free-living particles in the water column) and Sediment (particles settled to the bottom of the river)
+-Site corresponds to three pollution gradients: Site 1=low contamination, Site 2=medium contamination, Site 3=high contamination.
+
+```{r}
+# Subset samples from the filtered phyloseq object (p.rar4.2) 
+
+# Subset for the dry season samples (Muestreo == 2)
+Tseca2 = subset_samples(p.rar4.2, Muestreo == 2)
+
+# Subset for the rainy season samples (Muestreo == 3)
+Tlluviosa2 = subset_samples(p.rar4.2, Muestreo == 3)
+
+# Subset all water colum samples, then divide them by season
+ColAgua2=subset_samples(p.rar4.2, Tipo == "water")
+ColaAgua_Seca2 = subset_samples(ColAgua2, Muestreo == 2)        # Water samples from dry season
+ColaAgua_Lluvioso2 = subset_samples(ColAgua2, Muestreo == 3)    # Water samples from rainy season
+
+# Subset all sediment samples, then divide them by season
+Sediment2=subset_samples(p.rar4.2, Tipo == "sediment")
+Sediment2_Seca2 = subset_samples(Sediment2, Muestreo == 2)      # Sediment samples from dry season
+Sediment2_Lluvioso2 = subset_samples(Sediment2, Muestreo == 3)  # Sediment samples from rainy season
+```
+
+
+Alfa diversity analysis 
+```{r}
+
+library(ggh4x) # Load ggh4x to set custom y-scales per panel
+
+# Define shared y-axis limits for each metric across BOTH seasons
+limits_observed   <- c(90, 230)
+limits_shannon    <- c(3.9, 5.3)
+limits_invsimpson <- c(0, 145)
+
+
+# Define matching dark border colors
+border_colors <- c("agua" = "#882255", "sedimento" = "#004D40")
+
+# Globally set ggplot's default point size to small (e.g., size = 1 or 1.2)
+update_geom_defaults("point", list(size = 1, alpha = 0.7))
+
+# Create a richness plot (Observed, Shannon, InvSimpson) for dry season samples
+DrySeason <- plot_richness(Tseca2, x = "Punto", measures = c("Observed", "Shannon", "InvSimpson")) +
+  geom_boxplot(
+    aes(fill = as.factor(Tipo), color = as.factor(Tipo)), # Added color mapping
+    outlier.shape = NA, 
+    position = position_dodge(width = 0.8),
+    lwd = 0.4,       # Keeps borders crisp without overpowering the box
+    alpha = 0.85
+  ) +  
+  
+  scale_fill_manual(values = c("#CC79A7", "#009E73"), name = "Tipo") + 
+  
+  # Sets the custom border colors and hides duplicate legend entries
+  scale_color_manual(values = border_colors, guide = "none") +
+  
+  scale_x_discrete(labels = c("Sitio 1" = "Site 1", "Sitio 2" = "Site 2", "Sitio 3" = "Site 3")) +
+  facet_wrap(~variable, nrow = 1, scales = "free_y") + 
+  
+  # Standardize scales across columns for Dry Season
+  facetted_pos_scales(
+    y = list(
+      variable == "Observed"   ~ scale_y_continuous(limits = limits_observed),
+      variable == "Shannon"    ~ scale_y_continuous(limits = limits_shannon),
+      variable == "InvSimpson" ~ scale_y_continuous(limits = limits_invsimpson)
+    )
+  ) +
+  
+  theme_bw(base_size = 14) +   
+  theme(
+    panel.grid = element_line(), 
+    axis.line = element_line(color = "black"), 
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(size = 14, angle = 90, hjust = 1, color = "black"),
+    axis.text.y = element_text(size = 14, color = "black"),
+    legend.position = "none",
+    legend.title = element_blank(),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+  ) +
+  ggtitle("Dry season") +
+  labs(y = "Alpha diversity measure", x = "Site") 
+
+# Display the plot
+DrySeason
+
+
+# 2. Add color mapping to geom_boxplot and scale_color_manual to the plot
+RainySeason <- plot_richness(Tlluviosa2, x = "Punto", measures = c("Observed","Shannon", "InvSimpson")) +
+  
+  geom_boxplot(
+    aes(fill = as.factor(Tipo), color = as.factor(Tipo)), # Added color mapping
+    outlier.shape = NA,
+    position = position_dodge(width = 0.8),
+    lwd = 0.4,       
+    alpha = 0.85
+  ) +  
+  
+  scale_fill_manual(
+    values = c("#CC79A7", "#009E73"), 
+    name = "Tipo",
+    labels = c("sedimento" = "sediment", "agua" = "water")
+  ) + 
+  
+  # Sets the custom border colors and hides duplicate legend entries
+  scale_color_manual(values = border_colors, guide = "none") + 
+
+  scale_x_discrete(labels = c("Sitio 1" = "Site 1", "Sitio 2" = "Site 2", "Sitio 3" = "Site 3")) +
+  facet_wrap(~variable, nrow = 1, scales = "free_y") + 
+  
+  facetted_pos_scales(
+    y = list(
+      variable == "Observed"   ~ scale_y_continuous(limits = limits_observed),
+      variable == "Shannon"    ~ scale_y_continuous(limits = limits_shannon),
+      variable == "InvSimpson" ~ scale_y_continuous(limits = limits_invsimpson)
+    )
+  ) +
+  
+  theme_bw(base_size = 14) +  
+  theme(
+    panel.grid = element_line(), 
+    axis.line = element_line(color = "black"), 
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(size = 14, angle = 90, hjust = 1, color = "black"),
+    axis.text.y = element_text(size = 14, color = "black"),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+  ) +
+  ggtitle("Rainy season") +
+  labs(y = "Alpha diversity measure", x = "Site") 
+
+RainySeason
+
+plotTipoMuestreoPunto2 <- (DrySeason / RainySeason) +
+  plot_layout(heights = c(1, 1.15)) +
+  plot_annotation(tag_levels = 'A') &
+  theme(plot.tag = element_text(face = "bold", size = 16))
+
+plotTipoMuestreoPunto2
+
+ggsave("Figure1.jpg", plot = plotTipoMuestreoPunto2, width = 8, height = 7.5, dpi = 300)
+
+
+ggsave("Figure1B.jpg", plot = plotTipoMuestreoPunto2, width = 9, height = 7.5, dpi = 300)
+
+
+ggsave("Figure1.pdf", plot = plotTipoMuestreoPunto2, width = 8, height = 7.5, dpi = 300)
+```
+
+Statistical tests
+```{r, eval=FALSE}
+library(tidyverse)
+library(tibble)
+library(FSA)
+
+# --- SEDIMENT, DRY SEASON ---
+
+# Estimate alpha diversity metrics for sediment samples from the dry season
+alphadiv <- estimate_richness(Sediment2_Seca2, measures = c("Observed", "Shannon", "InvSimpson"))
+alphadiv2 <- rownames_to_column(alphadiv, var = "Codigo") 
+meta_data2 <- meta_data
+alphadiv3 <- left_join(alphadiv2, meta_data2, by = "Codigo")
+
+# Perform Kruskal-Wallis test and Dunn post-hoc test for each diversity metric by sampling site (Punto)
+kruskal.test(Observed ~ Punto, data = alphadiv3) # p-value = 0.3012
+dunnTest(Observed ~ Punto, data = alphadiv3, method = "bonferroni") #no significant
+
+kruskal.test(Shannon ~ Punto, data = alphadiv3) #p-value = 0.02732
+dunnTest(Shannon ~ Punto, data = alphadiv3, method = "bonferroni")
+#1 Site  1 - Site  2 -1.341641 0.179712495 0.53913748
+#2 Site  1 - Site  3 -2.683282 0.007290358 0.02187107 significant
+#3 Site  2 - Site  3 -1.341641 0.179712495 0.53913748
+
+kruskal.test(InvSimpson ~ Punto, data = alphadiv3)#p-value = 0.03899
+dunnTest(InvSimpson ~ Punto, data = alphadiv3, method = "bonferroni")
+#1 Site  1 - Site  2 -1.490712 0.1360371 0.40811138
+#2 Site  1 - Site  3 -2.534210 0.0112701 0.03381031 significant
+#3 Site  2 - Site  3 -1.043498 0.2967175 0.89015258
+
+
+# --- WATER COLUMN, DRY SEASON ---
+
+# Estimate alpha diversity metrics for water samples from the dry season
+alphadiv5 <- estimate_richness(ColaAgua_Seca2, measures = c("Observed", "Shannon", "InvSimpson"))
+alphadiv6 <- rownames_to_column(alphadiv5, var = "Codigo") 
+alphadiv7 <- left_join(alphadiv6, meta_data, by = "Codigo")
+
+# Run Kruskal-Wallis and Dunn's test by site (Punto)
+kruskal.test(Observed ~ Punto, data = alphadiv7) #p-value = 0.02732
+dunnTest(Observed ~ Punto, data = alphadiv7, method = "bonferroni")
+#1 Site  1 - Site  2 -1.341641 0.179712495 0.53913748
+#2 Site  1 - Site  3 -2.683282 0.007290358 0.02187107 significant
+#3 Site  2 - Site  3 -1.341641 0.179712495 0.53913748
+
+kruskal.test(Shannon ~ Punto, data = alphadiv7) #p-value = 0.02732
+dunnTest(Shannon ~ Punto, data = alphadiv7, method = "bonferroni")
+#1 Site  1 - Site  2 -1.341641 0.179712495 0.53913748
+#2 Site  1 - Site  3 -2.683282 0.007290358 0.02187107 significant
+#3 Site  2 - Site  3 -1.341641 0.179712495 0.53913748
+
+kruskal.test(InvSimpson ~ Punto, data = alphadiv7)#p-value = 0.06081
+dunnTest(InvSimpson ~ Punto, data = alphadiv7, method = "bonferroni")#non significant
+
+
+# --- WATER COLUMN, RAINY SEASON ---
+
+# Estimate diversity metrics for water samples from the rainy season
+alphadiv8 <- estimate_richness(ColaAgua_Lluvioso2, measures = c("Observed", "Shannon", "InvSimpson"))
+alphadiv9 <- rownames_to_column(alphadiv8, var = "Codigo") 
+alphadiv10 <- left_join(alphadiv9, meta_data, by = "Codigo")
+
+# Run statistical tests
+kruskal.test(Observed ~ Punto, data = alphadiv10) #p-value = 0.06646
+dunnTest(Observed ~ Punto, data = alphadiv10, method = "bonferroni")#non significant
+
+kruskal.test(Shannon ~ Punto, data = alphadiv10) #p-value = 0.02732
+dunnTest(Shannon ~ Punto, data = alphadiv10, method = "bonferroni")
+#1 Site  1 - Site  2 1.341641 0.179712495 0.53913748
+#2 Site  1 - Site  3 2.683282 0.007290358 0.02187107 significant
+#3 Site  2 - Site  3 1.341641 0.179712495 0.53913748
+
+kruskal.test(InvSimpson ~ Punto, data = alphadiv10) #p-value = 0.06646
+dunnTest(InvSimpson ~ Punto, data = alphadiv10, method = "bonferroni") #non significant
+
+
+# --- SEDIMENT, RAINY SEASON ---
+
+# Estimate diversity metrics for sediment samples from the rainy season
+alphadiv11 <- estimate_richness(Sediment2_Lluvioso2, measures = c("Observed", "Shannon", "InvSimpson"))
+alphadiv12 <- rownames_to_column(alphadiv11, var = "Codigo") 
+alphadiv13 <- left_join(alphadiv12, meta_data, by = "Codigo")
+
+# Run Kruskal-Wallis and post-hoc Dunn tests for diversity metrics
+kruskal.test(Observed ~ Punto, data = alphadiv13)#p-value = 0.8712
+dunnTest(Observed ~ Punto, data = alphadiv13, method = "bonferroni")#non significant
+
+kruskal.test(Shannon ~ Punto, data = alphadiv13)#p-value = 0.3932
+dunnTest(Shannon ~ Punto, data = alphadiv13, method = "bonferroni")#non significant
+
+kruskal.test(InvSimpson ~ Punto, data = alphadiv13)#p-value = 0.2019
+dunnTest(InvSimpson ~ Punto, data = alphadiv13, method = "bonferroni")#non significant
+```
+
+Beta Diversity analyses
+```{r}
+# --- AGGREGATE AND FILTER TAXA BY CLASS LEVEL ---
+library(ggplot2)
+library(phyloseq)
+library(ggh4x)
+
+
+# Okabe-Ito hex codes for 6 classes:
+okabe_ito_colors <- c(
+  "#CC79A7",  # Redish purple
+  "#E69F00", # Orange
+  "#56B4E9", # Sky Blue
+  "#009E73", # Bluish Green
+  "#F0E442", # Yellow
+  "#0072B2" # Blue
+)
+
+# Apply to your scale_fill_manual:
+scale_fill_manual(values = okabe_ito_colors)
+
+
+# 1. Melt phyloseq object to a standard data frame
+df_plot <- psmelt(ps_rel_abundclass)
+
+# 2. Correctly assign 'Water' vs 'Sediment'
+df_plot$Tipo_Name <- ifelse(df_plot$Tipo == "A" | grepl("^A", df_plot$Sample), "Water", "Sediment")
+
+# 3. Format season labels
+df_plot$Muestreo_Label <- factor(df_plot$Muestreo, 
+                                 levels = c("2", "3"), 
+                                 labels = c("Dry season", "Rainy season"))
+
+# 4. REPLACE "Sitio" WITH "Site" IN PUNTO
+df_plot$Punto_Label <- gsub("Sitio", "Site", df_plot$Punto)
+
+class_Estacion2 <- ggplot(df_plot, aes(x = Sample, y = Abundance, fill = class)) +
+  # Thin white borders between segments; removes colored outlines entirely
+  geom_bar(stat = "identity", position = "stack", width = 0.85, color = "white", linewidth = 0.2) +
+  
+  # NESTED FACETING: Season on top, Sitio in middle, Tipo (Water/Sediment) at bottom
+  facet_nested(
+    ~ Muestreo_Label + Punto_Label + Tipo_Name, 
+    scales = "free_x", 
+    space = "free_x",
+    nest_line = element_line(color = "white", linewidth = 0.8), # Clean underline annotation
+    solo_line = TRUE
+  ) + 
+  
+  # Colors
+  #scale_fill_manual(values = setNames(combined_colors[1:length(class_names)], class_names)) +
+  scale_fill_manual(values = okabe_ito_colors) +
+  scale_y_continuous(limits = c(0, 1.001), expand = c(0, 0)) +
+  
+  labs(
+    y = "Relative abundance",  
+    fill = "Class"
+  ) +
+  
+  theme_classic() + # Cleaner base theme without box borders
+  theme(
+    # Background & Panels
+    panel.background = element_blank(),
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_blank(),
+    
+    # X & Y Axis Text
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, color = "black", face = "bold", size = 9), 
+    axis.text.y = element_text(color = "black", size = 10), 
+    #axis.ticks.x = element_blank(), # Removes tick marks for cleaner spacing
+    #axis.ticks.y = element_line(color = "black"),
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = 13, face = "bold"),
+    
+    # Header Boxes Styling (Matches reference image style)
+    strip.background = element_rect(fill = "grey85", color = NA), # No outline around strip boxes
+    strip.text = element_text(size = 9, face = "bold", color = "black", margin = margin(t = 4, b = 4)),
+    panel.spacing.x = unit(0.3, "lines"), # White gap between facet panels
+    
+    # Underline styling for ggh4x
+    ggh4x.facet.nestline = element_line(color = "black", linewidth = 0.6),
+    
+    # Legend
+    legend.title = element_text(face = "bold", size = 11),
+    legend.text = element_text(size = 10)
+  )
+
+# Render plot
+class_Estacion2
+
+
+
+# --- AGGREGATE AND FILTER TAXA BY ORDER LEVEL ---
+
+# Group taxa at the "order" level (aggregates ASVs/OTUs into taxonomic orders)
+physeqOrder = tax_glom(p.rar4.2, taxrank = "order")
+# Transform count data into relative abundances per sample
+physeqOrderRA = transform_sample_counts(physeqOrder, function(x) x / sum(x))
+# Filter out orders with mean relative abundance ≤ 1%
+physeqOrderRAF = filter_taxa(physeqOrderRA, function(x) mean(x) > 0.01, TRUE)
+# Get the names of taxonomic orders that passed the abundance filter
+keepOrders = get_taxa_unique(physeqOrderRAF, "order")
+# Subset the original dataset to retain only taxa belonging to the filtered orders
+physeqF = subset_taxa(p.rar4.2, order %in% keepOrders)
+physeqF = tax_glom(physeqF, taxrank = "order")
+# Convert counts in the filtered dataset to relative abundances
+ps_rel_abund = transform_sample_counts(physeqF, function(x) x / sum(x))
+
+# Create a color palette (choose one you like)
+library(RColorBrewer)
+custom_colors <- c(
+  brewer.pal(8, "Set2"),
+  brewer.pal(8, "Dark2"),
+  "#999999", "#E0E0E0"  # Add more if needed
+)
+
+# Get unique order names (sorted for consistency)
+order_names <- sort(unique(as.character(tax_table(ps_rel_abund)[, "order"])))
+
+
+ps_rel_abund@tax_table[, "order"] <- as.character(ps_rel_abund@tax_table[, "order"])
+
+# Create a stacked bar plot showing the relative abundance of taxonomic orders per sample
+orden_Estacion <- plot_bar(ps_rel_abund, fill = "order") +
+  geom_bar(aes(color = as.factor(order), fill = as.factor(order)), stat = "identity", position = "stack") +
+  labs(
+    x = "Samples",
+    y = "Relative abundance ",
+    fill = "Order",
+    color = "Order"
+  ) +
+  facet_wrap(~ Muestreo, scales = "free",
+             labeller = labeller(Muestreo = c(
+               "2" = "Dry season",
+               "3" = "Raining season"
+             ))) +
+  
+  scale_fill_manual(values = setNames(custom_colors[1:length(order_names)], order_names)) +
+  scale_color_manual(values = setNames(custom_colors[1:length(order_names)], order_names)) +
+  theme(
+    panel.background = element_blank(),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, face = "bold", colour = "black"),
+    axis.text.y = element_text(color = "black"), 
+    axis.ticks.x = element_line(),
+    plot.title = element_text(hjust = 0.5),
+    legend.title = element_text(face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    axis.title.x = element_text(size = 14, face = "bold")
+  ) +
+  guides(
+    fill = guide_legend(title = "Order"),
+    color = guide_legend(title = "Order")
+  )
+
+orden_Estacion
+
+
+#AQUIIII ES
+library(ggplot2)
+library(phyloseq)
+library(ggh4x)
+
+# Okabe-Ito hex codes for 6 classes:
+okabe_ito_colors <- c(
+  "#CC79A7",  # Redish purple
+  "#E69F00", # Orange
+  "#56B4E9", # Sky Blue
+  "#009E73", # Bluish Green
+  "#F0E442", # Yellow
+  "#0072B2" # Blue
+)
+
+
+# 10 publication-ready colorblind-safe hex codes
+cvd_10_colors <- c(
+  "#56B4E9", # Cyan / Light Blue
+  "#D55E00", # Rose / Muted Red
+  "#F0E442", # Sand / Light Yellow
+  "#009E73", # Dark Green
+  "#332288", # Dark Indigo / Purple
+  "#CC79A7", # Magenta
+  "#0072B2", # Teal
+  "#999933", # Olive
+  "#882255", # Wine / Dark Rose
+  "#E69F00"  # Orange
+)
+
+# 1. Melt phyloseq object to a standard data frame
+df_order <- psmelt(ps_rel_abund)
+
+# 2. Correctly assign 'Water' vs 'Sediment'
+df_order$Tipo_Name <- ifelse(df_order$Tipo == "A" | grepl("^A", df_order$Sample), "Water", "Sediment")
+
+# 3. Format season labels
+df_order$Muestreo_Label <- factor(df_order$Muestreo, 
+                                  levels = c("2", "3"), 
+                                  labels = c("Dry season", "Rainy season"))
+
+# 4. REPLACE "Sitio" WITH "Site" IN PUNTO
+df_order$Punto_Label <- gsub("Sitio", "Site", df_order$Punto)
+
+# 4. Build plot matching class_Estacion2 format
+orden_Estacion2 <- ggplot(df_order, aes(x = Sample, y = Abundance, fill = order)) +
+  # White borders between segments without outer colored outlines
+  geom_bar(stat = "identity", position = "stack", width = 0.85, color = "white", linewidth = 0.2) +
+  
+  # NESTED FACETING: Season on top, Sitio in middle, Tipo (Water/Sediment) at bottom
+  facet_nested(
+    ~ Muestreo_Label + Punto_Label + Tipo_Name, 
+    scales = "free_x", 
+    space = "free_x",
+    nest_line = element_line(color = "white", linewidth = 0.8), # Clean underline annotation
+    solo_line = TRUE
+  ) + 
+  
+  # Colors & Scales
+  #scale_fill_manual(values = setNames(custom_colors[1:length(order_names)], order_names)) +
+  scale_fill_manual(values = cvd_10_colors[1:length(order_names)]) +
+  scale_y_continuous(limits = c(0, 1.001), expand = c(0, 0)) +
+  
+  labs(
+    y = "Relative abundance",  
+    fill = "Order"
+  ) +
+  
+  theme_classic() + 
+  theme(
+    # Background & Panel
+    panel.background = element_blank(),
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    
+    # REMOVE AXIS LINES
+    axis.line = element_blank(),
+    
+    # Text & Ticks
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, color = "black", face = "bold", size = 9), 
+    axis.text.y = element_text(color = "black", size = 10), 
+    axis.ticks.x = element_blank(),     # Removes x ticks for clean layout
+    axis.ticks.y = element_line(color = "black"),
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = 13, face = "bold"),
+    
+    # Header Boxes Styling
+    strip.background = element_rect(fill = "grey85", color = NA), 
+    strip.text = element_text(size = 9, face = "bold", color = "black", margin = margin(t = 4, b = 4)),
+    panel.spacing.x = unit(0.3, "lines"), 
+    
+    # Underline styling for ggh4x
+    ggh4x.facet.nestline = element_line(color = "black", linewidth = 0.6),
+    
+    # Legend
+    legend.title = element_text(face = "bold", size = 11),
+    legend.text = element_text(size = 10)
+  )
+
+# Render plot
+orden_Estacion2
+
+
+# Save the Plot
+ggsave("RelativeAbundanceOrder.jpg", plot = orden_Estacion, width = 10, height = 7, dpi = 300)
+ggsave("RelativeAbundanceOrder.pdf", plot = orden_Estacion, width = 10, height = 7, dpi = 300)
+
+# Arrange the class-level and order-level plots in one figure (stacked vertically)
+plotrelativeabundance = grid.arrange(class_Estacion2, orden_Estacion2, ncol = 1)
+
+plotrelativeabundance <- (class_Estacion2 / orden_Estacion2) +
+  plot_annotation(tag_levels = 'A') &
+  theme(plot.tag = element_text(face = "bold", size = 16))
+
+plotrelativeabundance
+
+# Save the combined plot as a jpg file
+install.packages("gridExtra")
+library(gridExtra)
+
+ggsave("plotrelativeabundance.jpg", plot = plotrelativeabundance, width = 15, height = 12, dpi = 450)
+
+```
+
+ORDINATION PLOT
+```{r}
+library(ggplot2)
+library(phyloseq)
+library(microbiome)
+library(ggforce)
+library(ggrepel)
+
+# 1. Prepare metadata
+sample_data(p.rar4.2)$Muestreo <- as.factor(sample_data(p.rar4.2)$Muestreo)
+
+df_ord <- plot_ordination(p.rar4.2, ord_clr, type = "samples", justDF = TRUE)
+df_ord$Site_Num <- gsub(".*([0-9]+).*", "\\1", df_ord$Punto)
+
+# Format factor for Site legend labels
+df_ord$Site <- factor(df_ord$Site_Num, levels = c("1", "2", "3"), labels = c("Site 1", "Site 2", "Site 3"))
+
+# ES AQUIIIIIIIII
+
+library(ggplot2)
+library(phyloseq)
+library(microbiome)
+library(ggforce)
+library(ggrepel)
+
+# 1. Prepare metadata
+sample_data(p.rar4.2)$Muestreo <- as.factor(sample_data(p.rar4.2)$Muestreo)
+
+df_ord <- plot_ordination(p.rar4.2, ord_clr, type = "samples", justDF = TRUE)
+df_ord$Site_Num <- gsub(".*([0-9]+).*", "\\1", df_ord$Punto)
+
+# Format factor for Site legend labels
+df_ord$Site <- factor(df_ord$Site_Num, levels = c("1", "2", "3"), labels = c("Site 1", "Site 2", "Site 3"))
+
+# 2. Build Plot
+ordination_plotp <- ggplot(df_ord, aes(x = PC1, y = PC2)) +
+  
+  # Ellipses
+  ggforce::geom_mark_ellipse(
+    aes(group = Muestreo, color = Muestreo), 
+    alpha = 0.3, 
+    linewidth = 0.8, 
+    linetype = "dashed"
+  ) +
+  
+  # Grid lines
+  geom_hline(yintercept = c(-7, 0, 7), color = "grey85", linetype = "dashed") +
+  geom_vline(xintercept = c(-7, 0, 7), color = "grey85", linetype = "dashed") +
+  
+  # POINT SHAPES
+  geom_point(
+    aes(color = Muestreo, shape = Tipo), 
+    size = 3.5, 
+    alpha = 0.85
+  ) +
+  
+  # NUMBERS ON PLOT + SITE LEGEND MAPPING
+  geom_text_repel(
+    aes(label = Site_Num, alpha = Site),
+    size = 3,
+    fontface = "bold",
+    color = "black",
+    box.padding = 0.25,
+    point.padding = 0.2,
+    max.overlaps = Inf,
+    segment.color = NA
+  ) +
+  
+  # Aspect ratio & limits
+  # coord_fixed(ratio = clr2 / clr1, xlim = c(-7, 7), ylim = c(-7, 7)) +
+  coord_cartesian(xlim = c(-7, 7), ylim = c(-7, 7)) +
+  
+  # Color Scale (Sampling) -> Changed to "Dry" and "Rainy"
+  scale_color_manual(
+    values = c("2" = "#CC79A7", "3" = "#009E73"),
+    labels = c("2" = "Dry", "3" = "Rainy"),
+    name = "Sampling"
+  ) +
+  
+  # Shape Scale (Matrix) -> Changed title to "Matrix"
+  scale_shape_manual(
+    values = c("sedimento" = 16, "agua" = 17),
+    labels = c("sedimento" = "Sediment", "agua" = "Water"),
+    name = "Matrix"
+  ) +
+  
+  # Alpha Scale (Site legend)
+  scale_alpha_manual(
+    values = c("Site 1" = 1, "Site 2" = 1, "Site 3" = 1),
+    name = "Site"
+  ) +
+  
+  # Customize legend glyphs for Site
+  guides(
+    alpha = guide_legend(
+      override.aes = list(
+        label = c("1", "2", "3"),
+        size = 4,
+        color = "black"
+      )
+    )
+  ) +
+  
+  labs(
+    x = paste0("PC1 (", round(clr1 * 100, 0), "%)"),
+    y = paste0("PC2 (", round(clr2 * 100, 0), "%)")
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid = element_blank(), 
+    panel.border = element_blank(),  
+    axis.line = element_blank(),     
+    axis.ticks = element_blank(),
+    
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(size = 14, color = "black"),
+    axis.text.y = element_text(size = 14, color = "black"),
+    
+    # Bottom-right Legend box
+    legend.position = c(0.95, 0.05),
+    legend.justification = c(1, 0),
+    legend.background = element_rect(fill = "white", color = "black", linewidth = 0.5),
+    legend.box = "vertical",
+    legend.text = element_text(size = 9), 
+    legend.title = element_text(size = 10, face = "bold"), 
+    legend.key.size = unit(0.35, "cm") 
+  )
+
+# Render plot
+ordination_plotp
+
+
+# 2. Build Plot
+ordination_plotp <- ggplot(df_ord, aes(x = PC1, y = PC2)) +
+  
+  # Ellipses
+  ggforce::geom_mark_ellipse(
+    aes(group = Muestreo, color = Muestreo), 
+    alpha = 0.3, 
+    linewidth = 0.8, 
+    linetype = "dashed"
+  ) +
+  
+  # Grid lines aligned with narrowed bounds
+  geom_hline(yintercept = c(-4, 0, 4), color = "grey85", linetype = "dashed") +
+  geom_vline(xintercept = c(-4, 0, 4), color = "grey85", linetype = "dashed") +
+  
+  # POINT SHAPES
+  geom_point(
+    aes(color = Muestreo, shape = Tipo), 
+    size = 3.5, 
+    alpha = 0.85
+  ) +
+  
+  # NUMBERS ON PLOT + SITE LEGEND MAPPING
+  geom_text_repel(
+    aes(label = Site_Num, alpha = Site),
+    size = 3.5,            # Increased text size slightly for clarity
+    fontface = "bold",
+    color = "black",
+    box.padding = 0.25,
+    point.padding = 0.25,
+    max.overlaps = Inf,
+    segment.color = NA
+  ) +
+  
+  # Tightened limits to reduce white space + fixed aspect ratio
+  coord_fixed(
+    ratio = 1,             # Keeps equal scaling for PC units
+    xlim = c(-5, 5),       # Zoomed in from -7, 7
+    ylim = c(-5, 5)        # Zoomed in from -7, 7
+  ) +
+  
+  # Color Scale (Sampling)
+  scale_color_manual(
+    values = c("2" = "#CC79A7", "3" = "#009E73"),
+    labels = c("2" = "Dry", "3" = "Rainy"),
+    name = "Sampling"
+  ) +
+  
+  # Shape Scale (Matrix)
+  scale_shape_manual(
+    values = c("sedimento" = 16, "agua" = 17),
+    labels = c("sedimento" = "Sediment", "agua" = "Water"),
+    name = "Matrix"
+  ) +
+  
+  # Alpha Scale (Site legend)
+  scale_alpha_manual(
+    values = c("Site 1" = 1, "Site 2" = 1, "Site 3" = 1),
+    name = "Site"
+  ) +
+  
+  # Customize legend glyphs for Site
+  guides(
+    alpha = guide_legend(
+      override.aes = list(
+        label = c("1", "2", "3"),
+        size = 4,
+        color = "black"
+      )
+    )
+  ) +
+  
+  labs(
+    x = paste0("PC1 (", round(clr1 * 100, 0), "%)"),
+    y = paste0("PC2 (", round(clr2 * 100, 0), "%)")
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid = element_blank(), 
+    panel.border = element_blank(),  
+    axis.line = element_blank(),     
+    axis.ticks = element_blank(),
+    
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(size = 14, color = "black"),
+    axis.text.y = element_text(size = 14, color = "black"),
+    
+    # Bottom-right Legend box
+    legend.position = c(0.95, 0.05),
+    legend.justification = c(1, 0),
+    legend.background = element_rect(fill = "white", color = "black", linewidth = 0.5),
+    legend.box = "vertical",
+    legend.text = element_text(size = 9), 
+    legend.title = element_text(size = 10, face = "bold"), 
+    legend.key.size = unit(0.35, "cm") 
+  )
+
+# Render plot
+ordination_plotp
+
+# Save the ordination plot as a jpg file
+ggsave("ordinationplot.jpg", plot = ordination_plotp, width = 15, height = 7, dpi = 300)
+
+
+ggsave("Figure3.jpg", plot = ordination_plotp, width = 8, height = 7, dpi = 300)
+
+
+# Save the ordination plot as a pdf file with wider width
+ggsave("Figure3.pdf", plot = ordination_plotp, width = 16, height = 7, dpi = 300)
+
+
+#PERMANOVA
+install.packages("vegan")
+library(vegan)
+
+#Extract the OTU table from p_clr
+otu_table(p_clr)
+otu_clr <- as(otu_table(p_clr), "matrix")
+
+#Transposase row x columns
+if(taxa_are_rows(p_clr)){
+  otu_clr <- t(otu_clr)
+}
+
+#Compute Euclidean Distance (correct for CLR)
+dist_clr <- dist(otu_clr, method = "euclidean")
+
+#Extract Metadata
+meta <- as(sample_data(p_clr), "data.frame")
+
+#Run PERMANOVA
+adonis2(dist_clr ~ Muestreo + Tipo + Punto,
+        data = meta,
+        permutations = 999)
+
+
+
+adonis2(dist_clr ~ Muestreo + Tipo + Punto,
+        data = meta,
+        permutations = 999,
+        by = "margin")
+```
+
+COG analysis
+
+SAMPLING
+```{r}
+summary(Sampling)
+
+Sampling$Sampling=as.factor(Sampling$Sampling)
+Sampling$COG=as.factor(Sampling$COG)
+Sampling$Function=as.factor(Sampling$Function)
+summary(Sampling)
+
+
+
+#Filter dataset
+Sampling_clean <- Sampling %>% 
+  filter(COG != "Not_assigned")
+
+
+# Recode Sampling values
+Combined_pct <- Combined_pct %>%
+  mutate(Season = recode(Sampling,
+                         `2` = "Dry season",
+                         `3` = "Rainy season"))
+
+Combined_pct2 <- Combined_pct2 %>% 
+  filter(COG != "S")
+
+Combined_pct2 <- Combined_pct2 %>% 
+  filter(Count != "0")
+
+Combined_pct2 <- Combined_pct2 %>%
+  filter(as.numeric(Count) > 1)
+
+Combined_pct2 <- Combined_pct2 %>% 
+  filter(COG != "Z")
+
+Combined_pct2 <- Combined_pct2 %>% 
+  filter(COG != "A")
+
+Combined_pct2 <- Combined_pct2 %>% 
+  filter(COG != "B")
+
+
+# 1. Clean unassigned reads and calculate percentages on the full dataset
+Combined_pct <- Sampling %>% 
+  filter(COG != "Not_assigned") %>%
+  group_by(Sampling) %>%
+  mutate(Percent = (Count / sum(Count)) * 100) %>%
+  ungroup() %>%
+  mutate(Season = recode(Sampling,
+                         `2` = "Dry season",
+                         `3` = "Rainy season"))
+
+# 2. Filter out specific categories and low counts from the percentage dataset
+Combined_pct2 <- Combined_pct %>% 
+  filter(!COG %in% c("S", "Z", "A", "B")) %>%
+  filter(Count != "0", as.numeric(Count) > 1) %>%
+  mutate(COG = fct_reorder(COG, Percent, .fun = mean, .desc = TRUE))
+
+# 3. Generate Plot
+bar_plot_Sampling2 <- ggplot(Combined_pct2, aes(x = COG, y = Percent, fill = Season)) +
+  geom_bar(
+    stat = "identity",
+    position = position_dodge(width = 0.9),
+    width = 0.7,
+    color = "black"
+  ) +
+  scale_fill_manual(
+    values = c("Dry season" = "#CC79A7", "Rainy season" = "#009E73")  
+
+  ) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 25)) +
+  labs(
+    x = "COG Categories",
+    y = "Percentage of COG (%)",
+    fill = NULL
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    axis.title.x = element_text(face = "bold"),
+    axis.title.y = element_text(face = "bold"),
+    legend.position = "top",
+    panel.grid = element_blank(),
+    axis.line = element_line(color = "black"),
+    axis.ticks = element_line(),
+    axis.text = element_text(size = 11)
+  )
+
+bar_plot_Sampling2
+
+#Percentages S: Dry:35 Raining:43
+#Removed COG equal or less to 0.1% jeje
+
+#  "A: RNA processing and modification",
+ # "B: Chromatin structure and dynamics",
+#  "R: General function prediction only",
+#  "W: Extracellular structures",
+#  "Y: Nuclear structure",
+ # "Z: Cytoskeleton",
+
+cog_functions <- paste(
+  "C: Energy production and conversion",
+  "D: Cell cycle control, cell division, chromosome partitioning",
+  "E: Amino acid transport and metabolism",
+  "F: Nucleotide transport and metabolism",
+  "G: Carbohydrate transport and metabolism",
+  "H: Coenzyme transport and metabolism",
+  "I: Lipid transport and metabolism",
+  "J: Translation, ribosomal structure and biogenesis",
+  "K: Transcription",
+  "L: Replication, recombination and repair",
+  "M: Cell wall/membrane/envelope biogenesis",
+  "N: Cell motility",
+  "O: Posttranslational modification, protein turnover, chaperones",
+  "P: Inorganic ion transport and metabolism",
+  "Q: Secondary metabolites biosynthesis, transport and catabolism",
+  "T: Signal transduction mechanisms",
+  "U: Intracellular trafficking, secretion, and vesicular transport",
+  "V: Defense mechanisms",
+  sep = "\n"
+)
+
+final_plot_Sampling <- ggdraw() +
+  draw_plot(bar_plot_Sampling2, x = 0, y = 0, width = 0.75, height = 1) +
+  draw_text(cog_functions, x = 0.63, y = 0.89, hjust = 0, vjust = 1, size = 11, lineheight = 1.5)
+
+final_plot_Sampling
+
+
+ggsave("Figure4.jpg", final_plot_Sampling, width = 12, height = 7, dpi = 300)
+
+ggsave("Figure4.pdf", final_plot_Sampling, width = 13, height = 7, dpi = 450)
+
+
+# Show the final plot
+print(final_plot_Sampling)
+
+
+```
+
+TYPE
+```{r}
+
+summary(Type)
+
+Type$Type=as.factor(Type$Type)
+Type$COG=as.factor(Type$COG)
+Type$Function=as.factor(Type$Function)
+summary(Type)
+
+#Filter dataset
+Type_clean <- Type %>% 
+  filter(COG != "Not_assigned")
+
+#AQUIIII
+Combined_pct3 <- Type_clean %>%
+  group_by(Type) %>%
+  mutate(Percent = (Count / sum(Count)) * 100)
+
+
+Combined_pct3 <- Combined_pct3 %>% 
+  filter(COG != "S")
+
+Combined_pct3 <- Combined_pct3 %>% 
+  filter(Count != "0")
+
+Combined_pct3 <- Combined_pct3 %>%
+  filter(as.numeric(Count) > 1)
+
+Combined_pct3 <- Combined_pct3 %>% 
+  filter(COG != "Z")
+
+Combined_pct3 <- Combined_pct3 %>% 
+  filter(COG != "A")
+
+Combined_pct3 <- Combined_pct3 %>% 
+  filter(COG != "B")
+
+library(forcats)
+
+Combined_pct3 <- Combined_pct3 %>%
+  mutate(COG = fct_reorder(COG, Percent, .fun = mean, .desc = TRUE))
+
+
+summary(Combined_pct3)
+
+ bar_plot_Type <- ggplot(Combined_pct3, aes(x = COG, y = Percent, fill = Type)) +
+  geom_bar(
+    stat = "identity",
+    position = position_dodge(width = 0.9),
+    width = 0.7,
+    color = "black",
+  ) +
+  scale_fill_manual(
+    values = c("sediment" = "#E69F00", "water" = "#56B4E9")  
+  ) +
+  theme_minimal() +
+  labs(
+    x = "COG Categories",
+    y = "Percentage of COG (%)",
+    fill = NULL
+  ) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 25)) +  
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    axis.title.x = element_text(face = "bold"),
+    axis.title.y = element_text(face = "bold"),
+    legend.position = "top",
+    panel.grid = element_blank(),
+    axis.line = element_line(color = "black"),
+    axis.ticks = element_line(),
+    axis.text = element_text(size = 10)
+  )
+bar_plot_Type
+
+final_plot_Type <- ggdraw() +
+  draw_plot(bar_plot_Type, x = 0, y = 0, width = 0.75, height = 1) +
+  draw_text(cog_functions, x = 0.67, y = 0.89, hjust = 0, vjust = 1, size = 9.5, lineheight = 1.5)
+
+final_plot_Type
+
+ggsave("COG_Type.jpg", final_plot_Type, width = 13, height = 7, dpi = 450)
+ggsave("COG_Type.pdf", final_plot_Type, width = 13, height = 7, dpi = 450)
+
+
+# Show the final plot
+print(final_plot_Type)
+```
+
+POINT
+```{r}
+summary(Point)
+
+Point$Point=as.factor(Point$Point)
+Point$COG=as.factor(Point$COG)
+Point$Function=as.factor(Point$Function)
+summary(Point)
+
+Point_clean <- Point %>% 
+  filter(COG != "Not_assigned")
+
+#AQUIIII
+Combined_pct4 <- Point_clean %>%
+  group_by(Point) %>%
+  mutate(Percent = (Count / sum(Count)) * 100)
+
+
+Combined_pct4 <- Combined_pct4 %>% 
+  filter(COG != "S")
+
+Combined_pct4 <- Combined_pct4 %>% 
+  filter(Count != "0")
+
+Combined_pct4 <- Combined_pct4 %>%
+  filter(as.numeric(Count) > 1)
+
+Combined_pct4 <- Combined_pct4 %>% 
+  filter(COG != "Z")
+
+Combined_pct4 <- Combined_pct4 %>% 
+  filter(COG != "A")
+
+Combined_pct4 <- Combined_pct4 %>% 
+  filter(COG != "B")
+
+Combined_pct4 <- Combined_pct4 %>% 
+  filter(COG != "W")
+
+library(forcats)
+
+Combined_pct4 <- Combined_pct4 %>%
+  mutate(COG = fct_reorder(COG, Percent, .fun = mean, .desc = TRUE))
+
+
+summary(Combined_pct4)
+
+bar_plot_Point <- ggplot(Combined_pct4, aes(x = COG, y = Percent, fill = Point)) +
+  geom_bar(
+    stat = "identity",
+    position = position_dodge(width = 1),
+    width = 0.5,
+    color = "black"
+  ) +
+  scale_fill_manual(
+    values = c("Site 1" = "#CC79A7", "Site 2" = "#009E73", "Site 3" = "#56B4E9")   
+  ) +
+  theme_minimal() +
+  labs(
+    x = "COG Categories",
+    y = "Percentage of COG (%)",
+    fill = NULL
+  ) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 25)) +  
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    axis.title.x = element_text(face = "bold"),
+    axis.title.y = element_text(face = "bold"),
+    legend.position = "top",
+    panel.grid = element_blank(),
+    axis.line = element_line(color = "black"),
+    axis.ticks = element_line(),
+    axis.text = element_text(size = 10)
+  )
+bar_plot_Point
+
+final_plot_Point <- ggdraw() +
+  draw_plot(bar_plot_Point, x = 0, y = 0, width = 0.75, height = 1) +
+  draw_text(cog_functions, x = 0.67, y = 0.89, hjust = 0, vjust = 1, size = 9.5, lineheight = 1.5)
+
+final_plot_Point
+
+ggsave("COG_PointFINAL.jpg", final_plot_Point, width = 13, height = 7, dpi = 450)
+ggsave("COG_PointFINAL_SU.pdf", final_plot_Point, width = 13, height = 7, dpi = 450)
+
+
+install.packages("patchwork")
+library(patchwork)
+
+
+# Define a fixed factor order based on overall mean abundance
+cog_order <- c("L", "M", "K", "T", "F", "O", "H", "E", "J", "G", "V", "C", "D", "P", "I", "U", "Q", "N")
+
+Combined_pct3$COG <- factor(Combined_pct3$COG, levels = cog_order)
+Combined_pct4$COG <- factor(Combined_pct4$COG, levels = cog_order)
+
+# 3. Stack vertically and add panel tags (A and B)
+Supplementary_Fig1 <- (bar_plot_Type / bar_plot_Point) +
+  plot_annotation(tag_levels = 'A') &
+  theme(plot.tag = element_text(face = "bold", size = 16))
+
+
+final_Supplementary_Fig1 <- ggdraw() +
+  draw_plot(Supplementary_Fig1, x = 0, y = 0, width = 0.72, height = 1) +
+  draw_text(
+    cog_functions, 
+    x = 0.72, 
+    y = 0.82, 
+    hjust = 0, 
+    vjust = 1, 
+    size = 8.5, 
+    lineheight = 1.25
+  )
+
+# Display final combined figure
+final_Supplementary_Fig1
+
+ggsave("SuplementaryFig1.jpg", final_Supplementary_Fig1, width = 13, height = 7, dpi = 450)
+ggsave("SuplementaryFig1.pdf", final_Supplementary_Fig1, width = 13, height = 7, dpi = 450)
+
+
+```
+
+
