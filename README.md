@@ -1,8 +1,11 @@
 # Metagenomic diversity analysis of metagenome-derived viral sequences from a Neotropical river
 
 This repository contains the R code, processed abundance matrices, and metadata supporting the manuscript:
+
 Seasonality has a stronger influence than pollution on metagenome-derived viral communities in a Neotropical river
+
 Author: Rachelle Fernández-Vargas.
+
 Journal / Status: Submitted for publication
 
 Raw Sequencing Data: Submitted to NCBI SRA under BioProject Accession PRJNA1240286.
