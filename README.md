@@ -10,11 +10,17 @@ This analysis pipeline performs taxonomic annotation, filtering, and alpha/beta 
 
 Repository Structure:
 ├── README.md               # Overview and execution instructions
+
 ├── LICENSE                 # Open-source license (MIT / CC-BY 4.0)
+
 ├── AnalysisViromaFinal.Rmd # Main R script containing the full pipeline
+
 ├── COG_Analysis.xlsx.      # Tables used for calculating functional profiles
+
 ├── viromes.csv             # OTU / viral abundance count matrix
+
 ├── mdata2.csv              # Sample metadata
+
 └── taxaid.csv              # List of target NCBI Taxonomy IDs
 
 System Requirements:
