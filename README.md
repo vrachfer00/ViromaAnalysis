@@ -4,9 +4,12 @@ This repository contains the R code, processed abundance matrices, and metadata 
 Seasonality has a stronger influence than pollution on metagenome-derived viral communities in a Neotropical river
 Author: Rachelle Fernández-Vargas.
 Journal / Status: Submitted for publication
+Raw Sequencing Data: Submitted to NCBI SRA under BioProject Accession PRJNA1240286.
+
 
 Overview:
 This analysis pipeline performs taxonomic annotation, filtering, and alpha/beta diversity analysis of metagenomic viral sequencing data. Samples were collected from water column (free-living particles) and sediment (settled particles) matrices across three pollution gradient sites along the Virilla River (Costa Rica) during both dry and rainy seasons of the year 2022.
+
 
 Repository Structure:
 
@@ -33,3 +36,4 @@ Main Steps:
 3. Data Preprocessing and Filtering.
 4. Alpha Diversity Analysis: Calculates Observed Richness, Shannon, and Inverse Simpson indices across habitat types, seasons, and sites. Includes Kruskal-Wallis non-parametric tests and Dunn post-hoc comparisons.
 5. Beta Diversity and Ordination: Aggregates relative abundances at Class and Order ranks and constructs Principal Component Analysis (PCA) plots on CLR-transformed data.
+
