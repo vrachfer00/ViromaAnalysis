@@ -1,9 +1,9 @@
 # Metagenomic diversity analysis of metagenome-derived viral sequences from a Neotropical river
 
-Description: This scrip performs taxonomic annotation, filtering, and alpha/beta diversity 
+The file "AnalysisViromaFinal.Rmd" contains the script to perform taxonomic annotation, filtering, and alpha/beta diversity 
 analysis of metagenomic sequencing data obtained from water column and 
 sediment samples collected along a pollution gradient in the Virilla River, 
-Costa Rica. Sampling was performed during the dry and rainy seasons.
+Costa Rica. Sampling was performed during the dry and rainy seasons of the year 2022.
 
 Main Steps:
  1. Installation and loading of required R packages.
