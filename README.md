@@ -1,20 +1,28 @@
 # Metagenomic diversity analysis of metagenome-derived viral sequences from a Neotropical river
 
-The file "AnalysisViromaFinal.Rmd" contains the script to perform taxonomic annotation, filtering, and alpha/beta diversity 
-analysis of metagenomic sequencing data obtained from water column and 
-sediment samples collected along a pollution gradient in the Virilla River, 
-Costa Rica. Sampling was performed during the dry and rainy seasons of the year 2022.
+This repository contains the R code, processed abundance matrices, and metadata supporting the manuscript:
+Seasonality has a stronger influence than pollution on metagenome-derived viral communities in a Neotropical river
+Author: Rachelle Fernández-Vargas.
+Journal / Status: Submitted for publication
+
+Overview:
+This analysis pipeline performs taxonomic annotation, filtering, and alpha/beta diversity analysis of metagenomic viral sequencing data. Samples were collected from water column (free-living particles) and sediment (settled particles) matrices across three pollution gradient sites along the Virilla River (Costa Rica) during both dry and rainy seasons of the year 2022.
+
+Repository Structure:
+├── README.md               # Overview and execution instructions
+├── LICENSE                 # Open-source license (MIT / CC-BY 4.0)
+├── AnalysisViromaFinal.Rmd # Main R script containing the full pipeline
+├── COG_Analysis.xlsx.      # Tables used for calculating functional profiles
+├── viromes.csv             # OTU / viral abundance count matrix
+├── mdata2.csv              # Sample metadata
+└── taxaid.csv              # List of target NCBI Taxonomy IDs
+
+System Requirements:
+R version: 4.2.0 (or superior) and RStudio (recommended)
 
 Main Steps:
- 1. Installation and loading of required R packages.
- 2. Taxonomic assignment using local SQLite database and `taxonomizr`.
- 3. Construction of `phyloseq` objects from OTU table, taxonomic assignments, 
-    and metadata.
- 4. Rarefaction of samples to normalize sequencing depth.
- 5. Prevalence- and abundance-based filtering of taxa and samples.
- 6. Subsetting of samples by habitat (water vs. sediment) and season (dry vs. rainy).
- 7. Alpha diversity analysis using Observed richness, Shannon, and Inverse Simpson indices.
- 8. Visualization of alpha diversity across sites and sample types.
- 9. Statistical testing using Kruskal-Wallis and Dunn’s post-hoc tests.
- 10.Ordination analysis on CLR-transformed microbial community data to visualize patterns in sample composition using Principal Component Analysis (PCA). 
- 11. COGs categories visual analysis.
+1. Taxonomic Annotation: Queries NCBI Taxonomy IDs against accessionTaxa.sql using taxonomizr.
+2. Phyloseq Construction: Merges OTU counts, taxonomy annotations, and sample metadata into a unified phyloseq object.
+3. Data Preprocessing and Filtering.
+4. Alpha Diversity Analysis: Calculates Observed Richness, Shannon, and Inverse Simpson indices across habitat types, seasons, and sites. Includes Kruskal-Wallis non-parametric tests and Dunn post-hoc comparisons.
+5. Beta Diversity and Ordination: Aggregates relative abundances at Class and Order ranks and constructs Principal Component Analysis (PCA) plots on CLR-transformed data.
